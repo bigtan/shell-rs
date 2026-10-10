@@ -23,15 +23,6 @@ use crate::shared::{
     Segment, SegmentedControl, commit_footer, dismiss_form_error, form_error_notification,
 };
 
-/// Where the SSH agent is found, as the form explains it.
-fn agent_note() -> SharedString {
-    if cfg!(windows) {
-        t!("credential.dialog.agent_note_windows")
-    } else {
-        t!("credential.dialog.agent_note")
-    }
-}
-
 /// What an empty passphrase field means for a key that already exists, and
 /// for one about to be generated.
 fn passphrase_placeholder(source: KeySource) -> SharedString {
@@ -96,6 +87,7 @@ pub struct CredentialForm {
     kind: CredentialKind,
     name: Entity<InputState>,
     user: Entity<InputState>,
+    agent_picker: Entity<crate::ssh_agent::AgentPicker>,
     /// The password, key file and passphrase, shared with the host form.
     fields: Entity<SecretFields>,
     source: KeySource,
@@ -187,6 +179,8 @@ impl CredentialForm {
                 .placeholder(DEFAULT_USER)
                 .default_value(draft.user.clone())
         });
+        let agent_picker =
+            cx.new(|cx| crate::ssh_agent::AgentPicker::new(draft.ssh_agent.clone(), window, cx));
         let fields = cx.new(|cx| SecretFields::new(secrets, draft.key_path.clone(), window, cx));
         if let Some(credential) = &credential {
             fields.update(cx, |fields, cx| {
@@ -233,6 +227,7 @@ impl CredentialForm {
             kind,
             name,
             user,
+            agent_picker,
             fields,
             source,
             key_text,
@@ -390,12 +385,21 @@ impl CredentialForm {
         } else {
             key_file
         };
+        let agent = if self.kind == CredentialKind::Agent {
+            match self.agent_picker.read(cx).value(cx) {
+                Ok(agent) => agent,
+                Err(error) => return self.fail(error, window, cx),
+            }
+        } else {
+            Default::default()
+        };
         let draft = CredentialDraft::new(
             self.name.read(cx).value().to_string(),
             self.kind,
             self.user.read(cx).value().to_string(),
         )
         .with_key_path(key_path)
+        .with_ssh_agent(agent)
         .validated();
         let draft = match draft {
             Ok(draft) => draft,
@@ -805,7 +809,11 @@ impl Render for CredentialForm {
                     .child(self.fields.read(cx).password_input("credential-password")),
             ),
             CredentialKind::Key => self.key_fields(form, cx),
-            CredentialKind::Agent => form,
+            CredentialKind::Agent => form.child(
+                Field::new()
+                    .label(t!("agent.title"))
+                    .child(self.agent_picker.clone()),
+            ),
         };
         v_flex()
             .gap_3()
@@ -816,10 +824,10 @@ impl Render for CredentialForm {
                     div()
                         .id("credential-agent-note")
                         .test_support()
-                        .aria_label(agent_note())
+                        .aria_label(t!("credential.dialog.agent_note"))
                         .text_sm()
                         .text_color(muted)
-                        .child(agent_note()),
+                        .child(t!("credential.dialog.agent_note")),
                 )
             })
             .when_some(secret_note, |view, note| {

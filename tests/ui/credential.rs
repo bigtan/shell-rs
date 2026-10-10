@@ -806,3 +806,142 @@ async fn a_credential_rows_tooltip_opens_beside_it_with_a_keys_whole_path(cx: &m
         assert!(window.try_find("credential-tooltip-note").is_none());
     });
 }
+
+#[gpui_kit::test]
+async fn agent_credential_selects_validates_and_reopens_its_agent(cx: &mut TestAppContext) {
+    use shellrs::ssh_agent::AgentSelection;
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        HostStore::empty(),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("new-credential", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("agent-choice").is_none());
+        window.input("Bitwarden", cx);
+        window.within("credential-kind").click(2usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("agent-choice").visible());
+        assert!(window.find("commit").visible());
+        let user = window.find("credential-user").bounds();
+        let agent = window.find("agent-choice").bounds();
+        assert_eq!(user.left(), agent.left());
+        assert_eq!(user.right(), agent.right());
+        window.click("agent-choice", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.input("自定义", cx));
+    in_frame(cx, handle, |window, cx| window.press("enter", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("agent-path", cx);
+        window.input("relative.sock", cx);
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("form-error").visible());
+        window.click("agent-path", cx);
+        window.press("secondary-a", cx);
+        window.input("/tmp/test-credential-agent.sock", cx);
+        // Save reads the draft without requiring Enter in the path field.
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let id = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let credential = &store.credentials()[0];
+        assert_eq!(
+            credential.ssh_agent,
+            AgentSelection::Path("/tmp/test-credential-agent.sock".into())
+        );
+        credential.id
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", id.0), cx);
+        window.dispatch_action(Box::new(EditCredential(id)), cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .credential(id)
+                .unwrap()
+                .ssh_agent,
+            AgentSelection::Path("/tmp/test-credential-agent.sock".into())
+        )
+    });
+    for (query, expected) in [
+        ("自动", AgentSelection::Auto),
+        ("系统环境", AgentSelection::Environment),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.click(("credential-row", id.0), cx);
+            window.dispatch_action(Box::new(EditCredential(id)), cx);
+        });
+        in_frame(cx, handle, |window, cx| window.click("agent-choice", cx));
+        in_frame(cx, handle, |window, cx| window.input(query, cx));
+        in_frame(cx, handle, |window, cx| window.press("enter", cx));
+        in_frame(cx, handle, |window, cx| window.click("commit", cx));
+        wait_for_dialog_to_close(cx, handle).await;
+        cx.update(|cx| {
+            assert_eq!(
+                workspace
+                    .read(cx)
+                    .store()
+                    .read(cx)
+                    .credential(id)
+                    .unwrap()
+                    .ssh_agent,
+                expected
+            )
+        });
+    }
+}
+
+#[gpui_kit::test]
+async fn changing_an_agent_credential_to_password_clears_its_agent_choice(cx: &mut TestAppContext) {
+    use shellrs::ssh_agent::AgentSelection;
+    let mut store = HostStore::empty();
+    let id = store.insert_credential_unnotified(
+        CredentialDraft::new("agent", CredentialKind::Agent, "deploy")
+            .with_ssh_agent(AgentSelection::Path("/tmp/offline-agent.sock".into())),
+    );
+    let host = store.insert_unnotified(
+        HostDraft::new("host", "host", 22, "root", AuthKind::NoPassword, None).with_credential(id),
+    );
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", id.0), cx);
+        window.dispatch_action(Box::new(EditCredential(id)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("credential-kind").click(0usize, cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("agent-choice").is_none());
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.credential(id).unwrap().ssh_agent,
+            AgentSelection::Environment
+        );
+        assert_eq!(
+            store.login(host).unwrap().ssh_agent,
+            AgentSelection::Environment
+        );
+    });
+}

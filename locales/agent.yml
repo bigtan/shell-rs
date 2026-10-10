@@ -1,0 +1,25 @@
+_version: 2
+agent.title:
+  zh-CN: SSH Agent
+  en: SSH Agent
+agent.auto:
+  zh-CN: 自动
+  en: Automatic
+agent.environment:
+  zh-CN: 系统环境 Agent
+  en: System environment agent
+agent.custom:
+  zh-CN: 自定义路径
+  en: Custom path
+agent.path_invalid:
+  zh-CN: 请填写 socket 或命名管道的绝对路径。
+  en: Enter an absolute socket or named pipe path.
+agent.path_help:
+  zh-CN: 填写绝对路径，不使用 ~ 或环境变量，随凭据保存。
+  en: Enter an absolute path without ~ or environment variables. The path is saved with the credential.
+agent.saved_path:
+  zh-CN: '已保存路径：%{path}'
+  en: 'Saved path: %{path}'
+agent.detecting:
+  zh-CN: 正在检测 Agent…
+  en: Detecting agents…

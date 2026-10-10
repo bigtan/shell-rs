@@ -86,6 +86,7 @@ impl CredentialKind {
 pub enum CredentialDraftError {
     Name,
     KeyPath,
+    AgentPath,
 }
 
 impl fmt::Display for CredentialDraftError {
@@ -93,6 +94,7 @@ impl fmt::Display for CredentialDraftError {
         formatter.write_str(&match self {
             CredentialDraftError::Name => t!("host.credential_draft.name"),
             CredentialDraftError::KeyPath => t!("host.credential_draft.key_path"),
+            CredentialDraftError::AgentPath => t!("agent.path_invalid"),
         })
     }
 }
@@ -113,6 +115,8 @@ pub struct CredentialDraft {
     pub user: SharedString,
     /// The private key file. Set exactly for [`CredentialKind::Key`].
     pub key_path: Option<SharedString>,
+    /// Agent endpoint preference; only Agent credentials may override the environment.
+    pub ssh_agent: crate::ssh_agent::AgentSelection,
 }
 
 impl CredentialDraft {
@@ -126,12 +130,18 @@ impl CredentialDraft {
             kind,
             user: user.into(),
             key_path: None,
+            ssh_agent: Default::default(),
         }
     }
 
     pub fn with_key_path(mut self, path: impl Into<SharedString>) -> Self {
         let path = path.into();
         self.key_path = (!path.trim().is_empty()).then_some(path);
+        self
+    }
+
+    pub fn with_ssh_agent(mut self, agent: crate::ssh_agent::AgentSelection) -> Self {
+        self.ssh_agent = agent;
         self
     }
 
@@ -159,6 +169,13 @@ impl CredentialDraft {
             ),
             CredentialKind::Password | CredentialKind::Agent => None,
         };
+        if self.kind != CredentialKind::Agent {
+            self.ssh_agent = Default::default();
+        } else if let crate::ssh_agent::AgentSelection::Path(path) = &self.ssh_agent
+            && !path.is_absolute()
+        {
+            return Err(CredentialDraftError::AgentPath);
+        }
         Ok(self)
     }
 }
@@ -176,6 +193,8 @@ pub struct Credential {
     pub kind: CredentialKind,
     pub user: SharedString,
     pub key_path: Option<SharedString>,
+    /// Agent endpoint preference; only Agent credentials may override the environment.
+    pub ssh_agent: crate::ssh_agent::AgentSelection,
     /// Position in the credential list.
     pub sort_order: i64,
 }
@@ -191,6 +210,7 @@ impl Credential {
             kind: draft.kind,
             user: draft.user,
             key_path: draft.key_path,
+            ssh_agent: draft.ssh_agent,
             sort_order: 0,
         }
     }
@@ -202,6 +222,7 @@ impl Credential {
             kind: self.kind,
             user: self.user.clone(),
             key_path: self.key_path.clone(),
+            ssh_agent: self.ssh_agent.clone(),
         }
     }
 
@@ -362,5 +383,25 @@ mod tests {
         assert!(matches_credential_query(&credential, "密钥"));
         assert!(matches_credential_query(&credential, "id_prod"));
         assert!(!matches_credential_query(&credential, "root"));
+    }
+
+    #[test]
+    fn agent_choice_defaults_to_environment_and_only_agent_credentials_keep_it() {
+        use crate::ssh_agent::AgentSelection;
+        let draft = CredentialDraft::new("agent", CredentialKind::Agent, "root");
+        assert_eq!(draft.ssh_agent, AgentSelection::Environment);
+        let path = AgentSelection::Path(std::env::temp_dir().join("custom.sock"));
+        let draft = draft.with_ssh_agent(path.clone()).validated().unwrap();
+        let credential = Credential::new(CredentialId(1), draft);
+        assert_eq!(credential.draft().ssh_agent, path);
+        let mut changed = credential.draft();
+        changed.kind = CredentialKind::Password;
+        assert_eq!(
+            changed.validated().unwrap().ssh_agent,
+            AgentSelection::Environment
+        );
+        let bad = CredentialDraft::new("agent", CredentialKind::Agent, "root")
+            .with_ssh_agent(AgentSelection::Path("relative.sock".into()));
+        assert_eq!(bad.validated(), Err(CredentialDraftError::AgentPath));
     }
 }

@@ -2452,6 +2452,22 @@ mod tests {
     }
 
     #[test]
+    fn agent_forwarding_is_off_by_default_and_follows_saved_edits_and_copies() {
+        let mut store = HostStore::empty();
+        let id = store.insert_unnotified(draft("db", None));
+        assert!(!store.login(id).unwrap().agent_forwarding);
+        let before = store.login(id).unwrap();
+        store.update_unnotified(id, draft("db", None).with_agent_forwarding(true));
+        assert!(store.login(id).unwrap().agent_forwarding);
+        assert_ne!(store.login(id).unwrap(), before);
+        let copy = store.duplicate_unnotified(id).unwrap();
+        assert!(store.login(copy).unwrap().agent_forwarding);
+        store.update_unnotified(id, draft("db", None));
+        assert!(!store.login(id).unwrap().agent_forwarding);
+        assert!(store.login(copy).unwrap().agent_forwarding);
+    }
+
+    #[test]
     fn notes_stay_through_an_edit_and_go_with_a_copy() {
         let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("db", None).with_notes("只读副本"));
@@ -2985,5 +3001,52 @@ mod tests {
         assert!(reopened.host(id).is_none());
         assert!(reopened.recent_hosts().next().is_none());
         assert!(reopened.bookmarks(id, BookmarkSide::Remote).is_empty());
+    }
+    #[test]
+    fn shared_agent_credentials_resolve_for_hosts_and_jumps() {
+        use crate::ssh_agent::AgentSelection;
+        let mut store = HostStore::empty();
+        let agent = store.insert_credential_unnotified(
+            CredentialDraft::new("agent", CredentialKind::Agent, "deploy").with_ssh_agent(
+                AgentSelection::Path(std::env::temp_dir().join("agent.sock")),
+            ),
+        );
+        let jump = store.insert_unnotified(draft("jump", None).with_credential(agent));
+        let target = store.insert_unnotified(
+            draft("target", None)
+                .with_credential(agent)
+                .with_route(jump_through(&[jump])),
+        );
+        let expected = store.credential(agent).unwrap().ssh_agent.clone();
+        let login = store.login(target).unwrap();
+        assert_eq!(login.ssh_agent, expected);
+        let crate::host::LoginRoute::Jump(jumps) = &login.route else {
+            panic!("jump")
+        };
+        let crate::host::JumpLogin::Host { login: hop, .. } = &jumps[0] else {
+            panic!("saved jump")
+        };
+        assert_eq!(hop.ssh_agent, expected);
+        let copy = store.duplicate_unnotified(target).unwrap();
+        assert_eq!(store.login(copy).unwrap().ssh_agent, expected);
+        let changed = store
+            .credential(agent)
+            .unwrap()
+            .draft()
+            .with_ssh_agent(AgentSelection::Auto);
+        store.update_credential_unnotified(agent, changed);
+        assert_eq!(store.login(target).unwrap().ssh_agent, AgentSelection::Auto);
+        assert_ne!(store.login(target).unwrap(), login);
+        store.remove_credential_unnotified(agent);
+        assert_eq!(
+            store.login(target).unwrap().ssh_agent,
+            AgentSelection::Environment
+        );
+        for auth in [AuthKind::Password, AuthKind::NoPassword] {
+            assert_eq!(
+                crate::host::HostLogin::manual("host", 22, "root", auth).ssh_agent,
+                AgentSelection::Environment
+            );
+        }
     }
 }
